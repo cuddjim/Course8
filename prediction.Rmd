@@ -1,0 +1,190 @@
+---
+title: Prediction of the manner in which an exercise was performed.
+output: html_document
+---
+<font size = 3>
+by Alina T.  
+March 18, 2021
+
+# Summary
+In this report, data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants are used to predict the manner in which they did the exercise. The dataset dimension is dramatically reduced and then four prediction models are fit to see which one proviodes the smallest out-of-sample error.
+
+### Load the data and libraries. Split the data into training and testing set
+```{r message = FALSE, warning = FALSE, results = "hide", cache = TRUE}
+setwd("C:/Users/alina/DS/8 Machine Learning/Course Project")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "training.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "testing.csv")
+training <- read.csv("training.csv")
+library(caret);     library(randomForest)
+set.seed(789)
+inTrain <- createDataPartition(training$classe, p = 0.75, list = FALSE)
+train <-training[inTrain,]
+test <- training[-inTrain,]
+```
+# Exploratory Analysis
+```{r}
+str(train[,sample(1:dim(train)[2], 10)])
+```
+The *str(train)* output is quite long, so I just randomly sampled some lines of it here. The output suggests that there might be many  NA numeric values and many empty character values ("") in the dataset.
+
+### Split the dataset by the variable class to explore separately
+I will group variables by the class: character, numeric, integer.
+```{r  message = FALSE, warning = FALSE}
+char <- sapply(train, function(x) class(x)=="character")
+trainChar <- train[,char]
+num <- sapply(train, function(x) class(x)=="numeric")
+trainNum <- train[, num]
+integer <- sapply(train, function(x) class(x)=="integer")
+trainInt <- train[, integer]
+```
+### The character variables: check for NAs and value frequency
+How many NAs does each character variable have?
+```{r}
+# frequency of percentage of NAs in the character variables:
+table(sapply(trainChar, function(x) sum(is.na(x))), useNA = "ifany")
+```
+All 37 of them have zero NAs each, but let's see how much missing information is recorded by "", for example. We'll look at the 5 most frequent values for each variable in the order of frequency. The code  produces a lot of output, so I'm showing only the beginning and the end here:
+```{r}
+lapply(trainChar, function(x) sort(table(x, useNA = "ifany"),decreasing = TRUE)[1:5])[c(1:5, 35:37)]
+```
+Many of the character columns have 14417 repetitions of "" in them - what is the percentage in each column?
+
+### Most of the character variables almost entirely consist of NAs. Drop them.
+```{r}
+# frequency of percentage of "" in character columns:
+table(round(sapply(trainChar, function(x) sum(x == "")/length(x)),2))
+```
+So 33 out of 37 character variables contain 98% of "". We will drop those variables, and we can see easily from the output above which ones the remaining four variables are.
+```{r}
+head(trainChar<- trainChar[,-(4:36)])
+```
+One of the 4 remaining variables is our response that we are trying to predict, and the rest have to do with the way data were measured and recorded, so they are not good for using as predictors since they are not measurements themselves. In other words, the only character variable that we need is the outcome variable *classe*.
+
+### Numeric variables:  check for NAs and zeros. Drop irrelevant variables.
+The next step is looking at the numeric and integer variables.  
+Again, most of them are not useful because they are mostly NA, so we will drop them as well. And then we will check for very low variance among the rest of the predictors and also for the percentage of zeros, just in case.  
+Numeric variables first:
+```{r}
+# frequency of different percentages of NAs in numeric columns:
+table(round(sapply(trainNum, function(x) sum(is.na(x))/length(x)),2), useNA = "ifany")
+# which variables are mostly NAs:
+numColNA <- sapply(trainNum, function(x) sum(is.na(x))/length(x) > 0.97)
+# drop those variables:
+trainNum <- trainNum[,!numColNA]
+# any other low-variance variables?    
+nearZeroVar(trainNum)                                               
+# frequency of percentage of zeros in numeric columns:
+table(round(sapply(trainNum, function(x) sum(x == 0)/length(x)),2), useNA = "ifany") 
+```
+**Result:**
+Only 27 out of 88 numeric variables are left, stored at *trainNum*. No nearly-zero variance among them and a reasonable amount of zeros. Now we will repeat the process with the integer variables.
+
+### Integer variables:  check for NAs and zeros. Drop irrelevant variables.
+Similar to what we did with numeric:
+```{r}
+# how many integer columns have very high percentage of NAs?
+table(round(sapply(trainInt, function(x) sum(is.na(x))/length(x)),2), useNA = "ifany")
+# which variables are mostly NAs
+intColNA <- sapply(trainInt, function(x) sum(is.na(x))/length(x) > 0.97)
+# drop those variables
+trainInt <- trainInt[,!intColNA]                                    
+# any other low-variance variables?     
+nearZeroVar(trainInt)                                               
+# frequency of percentage of zeros in the integer columns:
+table(round(sapply(trainInt, function(x) sum(x == 0)/length(x)),2), useNA = "ifany") # percentage of zeros in each column
+```
+We dropped another 6 variables that are mostly NA, but integers deserve a closer look because they might be indexes or potential factors. Let's look at how many unique values each column has.
+```{r}
+# how many unique values in each variable, sorted:
+sort(sapply(trainInt, function(x) length(table(x)))) 
+# is X just a collection of record indices?
+identical(training$X, 1:length(training$X))        
+# get rid of X
+trainInt <- trainInt[,-1]                           
+```
+Apparently, the X variable has as many different values as there are observations in our dataset. We dropped it after confirming that it is an index variable - which is not useful for prediction.
+
+The least amount of levels among integer variables is 29 - I won't factorize any of them yet and see if I can obtain a good prediction.
+
+**Result**:
+Only 28 out of 35 integer variables are left, stored at *trainInt*.
+
+### Rebuild the *train* dataset
+Now we will combine our tidy variables back into being a train set, not forgetting to factorize the outcome variable *classe* in both the train and the test set. We will also remove the dropped variables from our test set.
+```{r}
+#rebuild train set and factorize the outcome variable:
+train <- data.frame(trainNum, trainInt, classe = factor(train$classe))
+test <- mutate(test, classe=factor(classe))
+
+# match the set of variables of test to train:
+names <- names(train)
+test <- test[,names]   
+
+dim(train)[2]
+```
+So, now we have only 55 predictors instead of 159.
+
+### Further dimension reduction: matrix of correlations and PCA
+What else can we do to reduce dimension even more? Let's check how the variables are correlated with each other:
+```{r}
+# matrix of variable correlations excluding the outcome
+M <- abs(cor(train[,-56]))  
+diag(M) <- 0
+# how many are correlated to another variable:
+sum(M > 0.8)
+```
+We have quite a bunch of correlated pairs. In such case, using Principal Components should be really helpful to further decrease the number of predictors.
+```{r}
+# preprocess with a high threshold for explained variance:
+preProc <- preProcess(train[, -56], method = "pca", thresh = 0.95)	
+# PCs for train set:
+trainPC <- predict(preProc, train[,-56])    
+# same PCs for test set
+testPC <- predict(preProc, test[,-56])      
+numPC <- dim(trainPC)[2]; numPC
+```
+**Result:**
+By applying PCA and not forgetting to do the same to the test set, we reduced the number of predictors down to `r numPC`. Now we can try to fit a model.
+
+# Build prediction functions
+We will try a few different models and see which one will have the smallest out-of-sample error.  
+We will use four methods, all of which are suitable for non-binary classification: 
+
+* Boosting with trees
+* Linear discriminant analysis
+* Naive Bayes
+* Random forest   
+
+Where I am using the *train()* function, I will set the method for model building to "cv" (cross validation) with *trainControl()*.
+```{r  message = FALSE, warning = FALSE, results = "hide"}
+set.seed(789)
+GBM<- train(x = trainPC, y = train$classe, method = "gbm", verbose = FALSE, trControl= trainControl(method = "cv"))
+set.seed(789)
+LDA<- train(x = trainPC, y = train$classe, method = "lda", trControl= trainControl(method = "cv")) 
+set.seed(789)
+NB<- train(x = trainPC, y = train$classe, method = "nb", trControl= trainControl(method = "cv"))
+set.seed(789)
+RF <- randomForest(x = trainPC, y = train$classe)
+```
+### Cross validation
+None of the four models require additional cross validation.  
+With the first three, it was built in with the *trainControl()* function (*method = "cv"* stands for cross validation).  
+Regarding the case of the *randomForest()* function:  
+*"In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run"* - <a href="https://www.coursera.org/learn/practical-machine-learning/discussions/weeks/4/threads/pAGmXj4bEeerRhI_jX3yNA">mentor confirmed on Coursera</a>.
+
+### Estimate out-of-sample errors
+We will predict the *classe* values in the test set and compare them to the true values to estimate the out-of-sample error for each prediction function.
+```{r  message = FALSE, warning = FALSE}
+accGBM <- confusionMatrix(test$classe, predict(GBM, testPC))$overall[1]
+accLDA <- confusionMatrix(test$classe, predict(LDA, testPC))$overall[1]
+accNB <- confusionMatrix(test$classe, predict(NB, testPC))$overall[1]
+accRF <- confusionMatrix(test$classe, predict(RF, testPC))$overall[1]
+df <- data.frame(algorithm = c("Boosting with trees", "Linear discriminant analysis", "Naive Bayes", "Random forest"), Accuracy = c(accGBM, accLDA, accNB, accRF)); df
+# the smallest error:
+1 - max(df$Accuracy)
+```
+```{r echo = FALSE, results = "hide"}
+error <- round(100*(1 - max(df$Accuracy)), 2)
+```
+# Conclusion
+Out of the four prediction algorithms we have tried, the best for the outcome variable *classe* in the project dataset is the Random Forest with the estimated out-of-sample error being as small as `r error`%.
